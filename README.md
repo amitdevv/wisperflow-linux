@@ -1,8 +1,8 @@
 # WisprFlow Local
 
-Free, offline, open-source alternative to [WisprFlow](https://wisprflow.ai) for Linux. Speak anywhere, get clean text — no cloud, no subscription, no data leaves your machine.
+Free, offline, open-source alternative to [WisprFlow](https://wisprflow.ai) for Linux. Speak anywhere, get clean text - no cloud, no subscription, no data leaves your machine.
 
-**Hold `Ctrl+Shift+Space`, speak, release — text appears in your clipboard and is saved to Obsidian.**
+**Hold `Ctrl+Shift+Space`, speak, release - text appears in your clipboard and is saved to Obsidian.**
 
 ## Quick Start (One Command)
 
@@ -28,14 +28,14 @@ Two modes:
 
 ## Features
 
-- **100% offline** — all processing happens locally, no internet needed
-- **Global hotkey** — `Ctrl+Shift+Space` works from any app (browser, editor, chat, etc.)
-- **System tray icon** — green = ready, red = recording, orange = transcribing
-- **Obsidian integration** — daily notes with timestamped bullet points
-- **Clipboard copy** — transcription auto-copied, ready to paste
-- **Wayland + X11** — works on both via evdev + parecord
-- **100+ languages** — auto-detection or specify with `--language`
-- **Multiple models** — trade speed for accuracy based on your hardware
+- **100% offline** - all processing happens locally, no internet needed
+- **Global hotkey** - `Ctrl+Shift+Space` works from any app (browser, editor, chat, etc.)
+- **System tray icon** - green = ready, red = recording, orange = transcribing
+- **Obsidian integration** - daily notes with timestamped bullet points
+- **Clipboard copy** - transcription auto-copied, ready to paste
+- **Wayland + X11** - works on both via evdev + parecord
+- **100+ languages** - auto-detection or specify with `--language`
+- **Multiple models** - trade speed for accuracy based on your hardware
 
 ## RAM & Performance
 
@@ -192,12 +192,12 @@ type: voice-transcripts
 
 # Transcripts - March 20, 2026
 
-- **15:45:46** — Hi, hello hello
-- **15:45:57** — What are you guys doing currently today?
-- **16:10:30** — I need to finish the API integration by tomorrow
+- **15:45:46** - Hi, hello hello
+- **15:45:57** - What are you guys doing currently today?
+- **16:10:30** - I need to finish the API integration by tomorrow
 ```
 
-Works whether Obsidian is open or not — it's just markdown files.
+Works whether Obsidian is open or not - it's just markdown files.
 
 ## Architecture
 
@@ -236,23 +236,23 @@ Works whether Obsidian is open or not — it's just markdown files.
 
 ## Troubleshooting
 
-**"No keyboard found"** — You're not in the `input` group. Run `sudo usermod -aG input $USER` and log out/in. Quick workaround: `newgrp input` before running.
+**"No keyboard found"** - You're not in the `input` group. Run `sudo usermod -aG input $USER` and log out/in. Quick workaround: `newgrp input` before running.
 
-**No tray icon on GNOME** — Install and enable the AppIndicator extension:
+**No tray icon on GNOME** - Install and enable the AppIndicator extension:
 ```bash
 sudo dnf install gnome-shell-extension-appindicator
 # Then enable "AppIndicator and KStatusNotifierItem Support" in GNOME Extensions app
 ```
 
-**ALSA/GTK warnings in logs** — Cosmetic and harmless. They don't affect functionality.
+**ALSA/GTK warnings in logs** - Cosmetic and harmless. They don't affect functionality.
 
-**Wrong language detected** — Use `--language en` (or your language code) instead of auto-detect.
+**Wrong language detected** - Use `--language en` (or your language code) instead of auto-detect.
 
-**High latency** — Switch to a smaller model: `--model tiny` or `--model base`.
+**High latency** - Switch to a smaller model: `--model tiny` or `--model base`.
 
 ## Future Plans
 
-- [ ] LLM text cleanup via Ollama (remove filler words, fix grammar — "Flow mode")
+- [ ] LLM text cleanup via Ollama (remove filler words, fix grammar - "Flow mode")
 - [ ] Auto-type into focused app (ydotool integration)
 - [ ] Custom hotkey configuration
 - [ ] Per-app tone adjustment
