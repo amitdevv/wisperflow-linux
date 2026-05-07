@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-WisprFlow Local - Offline voice dictation for Linux
+LinuxFlow Local - Offline voice dictation for Linux
 
 Usage:
-    python wisprflow.py                     # terminal mode (Enter to start/stop)
-    python wisprflow.py --daemon            # background mode (tray icon + hotkey)
-    python wisprflow.py --model tiny        # faster, lower quality
-    python wisprflow.py --model base        # balanced
-    python wisprflow.py --language auto     # auto-detect language
-    python wisprflow.py --no-save           # skip Obsidian save
-    python wisprflow.py --type              # auto-type via ydotool
-    python wisprflow.py --devices           # list audio devices
+    python linuxflow.py                     # terminal mode (Enter to start/stop)
+    python linuxflow.py --daemon            # background mode (tray icon + hotkey)
+    python linuxflow.py --model tiny        # faster, lower quality
+    python linuxflow.py --model base        # balanced
+    python linuxflow.py --language auto     # auto-detect language
+    python linuxflow.py --no-save           # skip Obsidian save
+    python linuxflow.py --type              # auto-type via ydotool
+    python linuxflow.py --devices           # list audio devices
 
 Daemon mode:
-    Hold Ctrl+Shift+Space to record, release to stop + transcribe.
+    Hold Ctrl+Super+Z to record, release to stop + transcribe.
     System tray icon shows status: green=ready, red=recording, orange=transcribing.
 """
 
 import argparse
 import ctypes
 import datetime
+import signal
 import os
 import selectors
 import subprocess
@@ -43,7 +44,7 @@ try:
     import pystray
     from PIL import Image, ImageDraw
     HAS_TRAY = True
-except ImportError:
+except Exception:
     HAS_TRAY = False
 
 try:
@@ -82,8 +83,10 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
-OBSIDIAN_DIR = "/home/amitcode/Desktop/amit-notes/transcripts-local"
-MIN_DURATION = 0.5  # seconds - ignore recordings shorter than this
+OBSIDIAN_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "linuxflow", "transcripts")
+MIN_DURATION = 0.2  # seconds - allow short one-word utterances
+POST_RELEASE_BUFFER = 0.35  # seconds - capture trailing phonemes after key release
+TRANSCRIBE_TAIL_PAD = 0.25  # seconds - append silence to preserve final token
 
 
 # ---------- Core functions ----------
@@ -154,16 +157,30 @@ def record_audio(device_index=None):
 
 def transcribe(model, audio, language=None):
     """Transcribe audio using faster-whisper. Returns (text, language_detected)."""
+    if TRANSCRIBE_TAIL_PAD > 0:
+        pad_samples = int(SAMPLE_RATE * TRANSCRIBE_TAIL_PAD)
+        if pad_samples > 0:
+            audio = np.concatenate([audio, np.zeros(pad_samples, dtype=np.float32)])
+
+    duration_s = len(audio) / SAMPLE_RATE
+    # Short utterances ("yes", "no", single words) get over-filtered by VAD.
+    # Disable VAD for very short clips to reduce missed/empty transcriptions.
+    use_vad = duration_s >= 1.0
     segments, info = model.transcribe(
         audio,
         beam_size=5,
         language=language,
-        vad_filter=True,
+        vad_filter=use_vad,
         vad_parameters=dict(min_silence_duration_ms=500),
     )
 
     text = " ".join(seg.text.strip() for seg in segments)
     return text.strip(), info.language
+
+
+def format_for_insert(text):
+    """Prepare transcript text for clipboard/paste insertion."""
+    return text.rstrip() + " "
 
 
 def copy_to_clipboard(text):
@@ -190,6 +207,75 @@ def type_text(text):
         return False
     except subprocess.CalledProcessError:
         return False
+
+
+def paste_from_clipboard(text=None):
+    """Paste clipboard content into focused window, fallback to typing text."""
+    # Prefer ydotool (Wayland-friendly), fallback to xdotool (X11).
+    try:
+        subprocess.run(
+            ["ydotool", "key", "--key-delay", "3", "29:1", "47:1", "47:0", "29:0"],  # Ctrl+V
+            timeout=5,
+            check=True,
+        )
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"], timeout=5, check=True)
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+
+    # Some Wayland sessions block synthetic paste shortcuts.
+    # Final fallback: type the transcript directly.
+    if text:
+        return type_text(text)
+    return False
+
+
+def get_recorder_command(output_path):
+    """Return the best available recording command for this Linux host."""
+    # Prefer parecord when available (PulseAudio/PipeWire compat layer),
+    # then fall back to pw-record on pure PipeWire setups.
+    recorders = [
+        ["parecord", "--channels=1", "--rate=16000", "--format=s16le", "--file-format=wav", output_path],
+        ["pw-record", "--channels", "1", "--rate", "16000", output_path],
+    ]
+    for cmd in recorders:
+        try:
+            subprocess.run([cmd[0], "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            return cmd
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+def stop_recorder_process(proc):
+    """Stop recorder process with graceful signal first, then force kill."""
+    if not proc:
+        return
+    try:
+        # parecord/pw-record flush more reliably on SIGINT than SIGTERM.
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=2.0)
+        return
+    except Exception:
+        pass
+
+    try:
+        proc.terminate()
+        proc.wait(timeout=2.0)
+        return
+    except Exception:
+        pass
+
+    try:
+        proc.kill()
+        proc.wait(timeout=1.0)
+    except Exception:
+        pass
 
 
 def save_to_obsidian(text, save_dir, language):
@@ -224,7 +310,7 @@ def notify(title, body):
     """Send desktop notification."""
     try:
         subprocess.run(
-            ["notify-send", "-t", "3000", "-a", "WisprFlow", title, body],
+            ["notify-send", "-t", "3000", "-a", "LinuxFlow", title, body],
             timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -281,10 +367,10 @@ def daemon_mode(args):
     for kb in keyboards:
         print(f"Keyboard: {kb.name} ({kb.path})")
 
-    # Hotkey: Ctrl+Shift+Space
+    # Hotkey: Ctrl+Super+Z
     CTRL_KEYS = {ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL}
-    SHIFT_KEYS = {ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT}
-    TRIGGER_KEY = ecodes.KEY_SPACE
+    SUPER_KEYS = {ecodes.KEY_LEFTMETA, ecodes.KEY_RIGHTMETA}
+    TRIGGER_KEY = ecodes.KEY_Z
 
     # Shared state
     recording = False
@@ -293,6 +379,7 @@ def daemon_mode(args):
     rec_tmpfile = None
     tray = None
     session_count = 0
+    hotkey_label = "Ctrl+Super+Z"
 
     # Pre-create icons to avoid GTK calls from threads
     icon_green = make_icon("green")
@@ -304,13 +391,13 @@ def daemon_mode(args):
         def _update():
             if tray:
                 tray.icon = icons[color]
-                tray.title = f"WisprFlow - {title}"
+                tray.title = f"LinuxFlow - {title}"
             return False
         if HAS_GLIB:
             GLib.idle_add(_update)
         elif tray:
             tray.icon = icons[color]
-            tray.title = f"WisprFlow - {title}"
+            tray.title = f"LinuxFlow - {title}"
 
     def start_recording():
         nonlocal recording, rec_process, rec_tmpfile
@@ -322,16 +409,12 @@ def daemon_mode(args):
             import tempfile
             rec_tmpfile = tempfile.mktemp(suffix=".wav")
 
-            try:
-                rec_process = subprocess.Popen(
-                    ["parecord", "--channels=1", "--rate=16000",
-                     "--format=s16le", "--file-format=wav", rec_tmpfile],
-                    stderr=subprocess.DEVNULL,
-                )
-            except FileNotFoundError:
-                print("  Error: parecord not found. Install: sudo dnf install pulseaudio-utils")
+            recorder_cmd = get_recorder_command(rec_tmpfile)
+            if not recorder_cmd:
+                print("  Error: no recorder found. Install 'pulseaudio' (parecord) or 'pipewire' (pw-record).")
                 recording = False
                 return
+            rec_process = subprocess.Popen(recorder_cmd, stderr=subprocess.DEVNULL)
 
         set_tray("red", "Recording...")
 
@@ -343,8 +426,9 @@ def daemon_mode(args):
             recording = False
 
         if rec_process:
-            rec_process.terminate()
-            rec_process.wait(timeout=5)
+            # Small tail buffer helps avoid clipping final syllable/word.
+            time.sleep(POST_RELEASE_BUFFER)
+            stop_recorder_process(rec_process)
 
         set_tray("orange", "Transcribing...")
 
@@ -354,12 +438,12 @@ def daemon_mode(args):
             with wave.open(rec_tmpfile, "rb") as wf:
                 raw = wf.readframes(wf.getnframes())
                 if len(raw) < SAMPLE_RATE * MIN_DURATION * 2:  # 2 bytes per sample
-                    set_tray("green", "Ready (Ctrl+Shift+Space)")
+                    set_tray("green", f"Ready ({hotkey_label})")
                     return
                 audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         except Exception as e:
             print(f"  Error reading audio: {e}")
-            set_tray("green", "Ready (Ctrl+Shift+Space)")
+            set_tray("green", f"Ready ({hotkey_label})")
             return
         finally:
             try:
@@ -374,8 +458,7 @@ def daemon_mode(args):
         elapsed = time.time() - start
 
         if not text:
-            set_tray("green", "Ready (Ctrl+Shift+Space)")
-            notify("WisprFlow", "No speech detected")
+            set_tray("green", f"Ready ({hotkey_label})")
             return
 
         session_count += 1
@@ -383,7 +466,13 @@ def daemon_mode(args):
         print(f"  >>> {text}")
 
         if not args.no_clipboard:
-            copy_to_clipboard(text)
+            insert_text = format_for_insert(text)
+            copied = copy_to_clipboard(insert_text)
+            if copied and not args.no_paste:
+                # Give compositor/focus a brief moment before sending paste hotkey.
+                time.sleep(0.2)
+                if not paste_from_clipboard(text=insert_text):
+                    print("  [paste] failed (ensure ydotoold is running)")
 
         if args.auto_type:
             type_text(text)
@@ -392,10 +481,7 @@ def daemon_mode(args):
             saved_path = save_to_obsidian(text, args.save_dir, detected_lang)
             print(f"  [obsidian] {os.path.basename(saved_path)}")
 
-        preview = text[:80] + "..." if len(text) > 80 else text
-        notify("WisprFlow", preview)
-
-        set_tray("green", "Ready (Ctrl+Shift+Space)")
+        set_tray("green", f"Ready ({hotkey_label})")
 
     def hotkey_listener():
         pressed = set()
@@ -418,9 +504,9 @@ def daemon_mode(args):
                             pressed.discard(k)
 
                         has_ctrl = bool(pressed & CTRL_KEYS)
-                        has_shift = bool(pressed & SHIFT_KEYS)
+                        has_super = bool(pressed & SUPER_KEYS)
                         has_trigger = TRIGGER_KEY in pressed
-                        combo_active = has_ctrl and has_shift and has_trigger
+                        combo_active = has_ctrl and has_super and has_trigger
 
                         if combo_active and not recording:
                             start_recording()
@@ -445,15 +531,15 @@ def daemon_mode(args):
         tray.visible = True
         threading.Thread(target=hotkey_listener, daemon=True).start()
         print("\nRunning in background.")
-        print("  Hold Ctrl+Shift+Space to record, release to stop.")
+        print(f"  Hold {hotkey_label} to record, release to stop.")
         print("  Right-click tray icon to quit.\n")
 
     tray_icon = pystray.Icon(
-        "wisprflow",
+        "linuxflow",
         icon=make_icon("green"),
-        title="WisprFlow - Ready (Ctrl+Shift+Space)",
+        title=f"LinuxFlow - Ready ({hotkey_label})",
         menu=pystray.Menu(
-            pystray.MenuItem("WisprFlow Local", None, enabled=False),
+            pystray.MenuItem("LinuxFlow Local", None, enabled=False),
             pystray.MenuItem(f"Model: {args.model}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
@@ -474,7 +560,7 @@ def terminal_mode(args):
     model = WhisperModel(args.model, device="cpu", compute_type="int8")
     print("Model loaded. Ready.\n")
     print("=" * 50)
-    print("  WISPRFLOW LOCAL")
+    print("  LINUXFLOW LOCAL")
     print("  Press Enter to START recording")
     print("  Press Enter again to STOP")
     print("  Ctrl+C to quit")
@@ -510,14 +596,22 @@ def terminal_mode(args):
             print(f"  >>> {text}\n")
 
             if not args.no_clipboard:
-                if copy_to_clipboard(text):
+                insert_text = format_for_insert(text)
+                copied = copy_to_clipboard(insert_text)
+                if copied:
                     print("  [clipboard] copied")
+                    if not args.no_paste:
+                        time.sleep(0.2)
+                        if paste_from_clipboard(text=insert_text):
+                            print("  [paste] done")
+                        else:
+                            print("  [paste] failed (ensure ydotoold is running)")
 
             if args.auto_type:
                 if type_text(text):
                     print("  [ydotool] typed")
                 else:
-                    print("  [ydotool] not available -- install: sudo dnf install ydotool")
+                    print("  [ydotool] not available -- install package: ydotool")
 
             if not args.no_save:
                 path = save_to_obsidian(text, args.save_dir, detected_lang)
@@ -532,7 +626,7 @@ def terminal_mode(args):
 # ---------- Main ----------
 
 def main():
-    parser = argparse.ArgumentParser(description="WisprFlow Local - Offline voice dictation")
+    parser = argparse.ArgumentParser(description="LinuxFlow Local - Offline voice dictation")
     parser.add_argument(
         "--model", default="small",
         help="Whisper model size (default: small). Options: tiny, base, small, medium, large-v3-turbo"
@@ -544,6 +638,7 @@ def main():
     parser.add_argument("--save-dir", default=OBSIDIAN_DIR, help="Directory to save transcripts")
     parser.add_argument("--no-save", action="store_true", help="Don't save to Obsidian")
     parser.add_argument("--no-clipboard", action="store_true", help="Don't copy to clipboard")
+    parser.add_argument("--no-paste", action="store_true", help="Don't auto-paste after copying to clipboard")
     parser.add_argument("--type", dest="auto_type", action="store_true", help="Auto-type via ydotool")
     parser.add_argument("--device", type=int, default=None, help="Audio input device index")
     parser.add_argument("--devices", action="store_true", help="List audio devices and exit")
